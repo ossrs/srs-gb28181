@@ -2605,12 +2605,42 @@ SrsTsContextWriter::SrsTsContextWriter(ISrsStreamWriter* w, SrsTsContext* c, Srs
 
 SrsTsContextWriter::~SrsTsContextWriter()
 {
+    srs_error_t err = srs_success;
+    err = flush_all_msg();
+    if ( err != srs_success) {
+        srs_warn("err in flush msg in cache!");
+    }
 }
 
 srs_error_t SrsTsContextWriter::write_audio(SrsTsMessage* audio)
 {
     srs_error_t err = srs_success;
-    
+
+    if (acodec != audio->acodec) {
+        acodec = audio->acodec;
+    }
+
+    if (!ts_cache_msg_verifying_done) {
+        // video codec is not verified
+        if (vcodec == SrsVideoCodecIdForbidden) {
+            if (ts_msg_cache_for_verify_codec.size() < SRS_CONSTS_TS_MUXER_MSG_CACHE_COUNT) {
+                ts_msg_cache_for_verify_codec.push_back(audio->detach());
+                return err;
+            } else {
+                err = flush_all_msg();
+                ts_cache_msg_verifying_done = true;
+            }
+        } else {
+            //video codec is verified
+            err = flush_all_msg();
+            ts_cache_msg_verifying_done = true;            
+        }
+    }
+
+    if(err != srs_success) {
+        return err;
+    }
+
     srs_info("hls: write audio pts=%" PRId64 ", dts=%" PRId64 ", size=%d",
         audio->pts, audio->dts, audio->PES_packet_length);
     
@@ -2625,7 +2655,32 @@ srs_error_t SrsTsContextWriter::write_audio(SrsTsMessage* audio)
 srs_error_t SrsTsContextWriter::write_video(SrsTsMessage* video)
 {
     srs_error_t err = srs_success;
-    
+
+    if (vcodec != video->vcodec) {
+        vcodec = video->vcodec;
+    }
+
+    if (!ts_cache_msg_verifying_done) {
+        // audio codec is not verified
+        if (acodec == SrsAudioCodecIdForbidden) {
+            if (ts_msg_cache_for_verify_codec.size() < SRS_CONSTS_TS_MUXER_MSG_CACHE_COUNT) {
+                ts_msg_cache_for_verify_codec.push_back(video->detach());
+                return err;
+            } else {
+                err = flush_all_msg();
+                ts_cache_msg_verifying_done = true;
+            }
+        } else {
+            //video codec is verified
+            err = flush_all_msg();
+            ts_cache_msg_verifying_done = true;            
+        }
+    }
+
+    if(err != srs_success) {
+        return err;
+    }
+
     srs_info("hls: write video pts=%" PRId64 ", dts=%" PRId64 ", size=%d",
         video->pts, video->dts, video->PES_packet_length);
     
@@ -2634,6 +2689,37 @@ srs_error_t SrsTsContextWriter::write_video(SrsTsMessage* video)
     }
     srs_info("hls encode video ok");
     
+    return err;
+}
+
+srs_error_t SrsTsContextWriter::flush_all_msg()
+{
+    srs_error_t err = srs_success;
+    int idx=0;
+    int size = ts_msg_cache_for_verify_codec.size();
+    SrsTsMessage*  msg = NULL;
+    if ( size > 0) {
+        for (idx=0; idx<size; idx++) {
+            msg = ts_msg_cache_for_verify_codec.at(idx);
+            if ( msg ) {
+                err = context->encode(writer, msg, vcodec, acodec);
+                if ( err != srs_success) {
+                    break;
+                }
+            }
+        }
+        
+        for (idx=0; idx<size; idx++) {
+            msg = ts_msg_cache_for_verify_codec.at(idx);
+            if ( msg ) {
+                srs_freep(msg);
+            }
+        }
+
+        srs_trace("flush all msg in cache, msg size:%d, the acodec:%d, the vcodec:%d", size, acodec, vcodec);
+        ts_msg_cache_for_verify_codec.clear();
+    }
+
     return err;
 }
 
