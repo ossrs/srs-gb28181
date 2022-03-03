@@ -1293,20 +1293,162 @@ srs_error_t SrsGb28181RtmpMuxer::write_h264_ipb_frame2(char *frame, int frame_si
     return err;
 }
 
+const char * avpriv_find_start_code(const char* p,
+                                    const char* end,
+                                    uint32_t* state)
+{
+    srs_assert(p <= end);
+    if (p >= end) {
+        return end;
+    }
+
+    for (int i = 0; i < 3; i++) {
+        uint32_t tmp = *state << 8;
+        *state = tmp + *(p++);
+        if (tmp == 0x100 || p == end) {
+            return p;
+        }
+    }
+
+    while (p < end) {
+        if      (p[-1] > 1      ) p += 3;
+        else if (p[-2]          ) p += 2;
+        else if (p[-3]|(p[-1]-1)) p++;
+        else {
+            p++;
+            break;
+        }
+    }
+
+    p = min(p, end) - 4;
+    *state = *(uint32_t*)p;
+
+    return p + 4;
+}
+
+srs_error_t find_start_code_for_slices(char *video_data, int &size, std::list<int> &list_index) {
+    srs_error_t err = srs_success;
+
+    if (video_data <= 0){
+        return srs_error_new(ERROR_GB28181_H264_FRAMESIZE, "h264 frame size");
+    }
+
+    uint32_t start_code = -1;
+    const char *start = video_data, *end = video_data + size;
+    int final_flag = 0;
+
+    while (start < end) {
+        start = avpriv_find_start_code(start, end, &start_code);
+        if ((start_code & 0x00FFFFFF) != 0x010000) {
+            break;
+        }
+
+        const char *_start_tmp = start;
+        while (_start_tmp - 4 > video_data && _start_tmp[-5] == 0) {
+            _start_tmp--;
+        }
+        list_index.push_back(_start_tmp - 4 - video_data);
+    }
+    return err;
+}
+
+srs_error_t find_start_code_for_slice(char *video_data, int &size, std::list<int> &list_index) {
+    srs_error_t err = srs_success;
+
+    if (video_data <= 0){
+        return srs_error_new(ERROR_GB28181_H264_FRAMESIZE, "h264 frame size");
+    }
+
+    //0001xxxxxxxxxxxxxxxxxxxxxxxxx      nal unit type=1
+    if(video_data[0] == 0x00 && video_data[1] == 0x00 &&
+        video_data[2] == 0x00 && video_data[3] == 0x01 && 
+        //nal unit type = 1
+        (video_data[4] & 0x1f) == 1)
+    {
+        list_index.push_back(0);
+    }
+    
+    return err;
+}
+
+typedef enum GopFrameSliceTypeGuess {
+    GOP_FRAME_SLICE_UNKW,
+    GOP_FRAME_SINGAL_SLICE, 
+}GopFrameSliceTypeGuess;
+GopFrameSliceTypeGuess g_guess_type = GOP_FRAME_SLICE_UNKW;
+
+srs_error_t try_fast_demux_gop_frame_slice_type(char *video_data, int &size, 
+                                        std::list<int> &list_index) {
+    srs_error_t err = srs_success;
+    bool after_decode = false;
+
+    if (size <= 0){
+        return srs_error_new(ERROR_GB28181_H264_FRAMESIZE, "h264 frame size<=0");
+    }
+
+    if(video_data[0] == 0x00 && video_data[1] == 0x00 &&
+        video_data[2] == 0x00 && video_data[3] == 0x01) {
+        int slicetype = video_data[4] & 0x1f;
+
+        switch (slicetype) {
+            case 1: 
+            {
+                if(g_guess_type == GOP_FRAME_SINGAL_SLICE) {
+                    find_start_code_for_slice(video_data, size, list_index);
+                    after_decode = true;
+                }
+                break;
+            }
+            case 6:
+            case 7:
+            case 8:
+            case 5:
+            {
+                g_guess_type = GOP_FRAME_SLICE_UNKW;
+                find_start_code_for_slices(video_data, size, list_index);
+                after_decode = true;
+                int slices_count = 0;
+                list<int>::iterator it = list_index.begin();
+                for(; it!=list_index.end(); ++it) {
+                    if((SrsAvcNaluType)(video_data[*it+4] & 0x1f) == SrsAvcNaluTypeIDR) {
+                        slices_count++;
+                    }
+                }
+                if(slices_count == 1) {
+                    g_guess_type = GOP_FRAME_SINGAL_SLICE;
+                } else {
+                    g_guess_type = GOP_FRAME_SLICE_UNKW;
+                }
+                break;
+            }
+            case 2:
+            case 3:
+            case 4:
+                srs_warn("nal unit has dp%s which ffmpeg 4.2 not supported", 
+                        slicetype == 2?"A":(slice == 3?"B":"C"));
+                break;
+            default:
+                srs_warn("unknown slice type is %d", slicetype);
+                break;
+        }
+        
+    }
+
+    if(!after_decode) {
+        find_start_code_for_slices(video_data, size, list_index);
+    }
+
+    return err;
+}
+
  srs_error_t SrsGb28181RtmpMuxer::replace_startcode_with_nalulen(char *video_data, int &size, uint32_t pts, uint32_t dts)
  {
     srs_error_t err = srs_success;
 
-    int index = 0;
     std::list<int> list_index;
 
-    for(; index < size; index++){
-        if (index > (size-4))
-            break;
-        if (video_data[index] == 0x00 && video_data[index+1] == 0x00 &&
-             video_data[index+2] == 0x00 && video_data[index+3] == 0x01){
-                 list_index.push_back(index);
-             }
+    if((err = try_fast_demux_gop_frame_slice_type(video_data, size, list_index)) != srs_success) {
+        return srs_error_new(err, "find start_code error");
     }
 
     if (list_index.size() == 1){
