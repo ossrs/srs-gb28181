@@ -1,7 +1,7 @@
 //
 // Copyright (c) 2013-2021 The SRS Authors
 //
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: MIT or MulanPSL-2.0
 //
 
 #ifndef SRS_APP_CONFIG_HPP
@@ -211,7 +211,7 @@ public:
 // Parse utilities
 public:
     // Parse config directive from file buffer.
-    virtual srs_error_t parse(srs_internal::SrsConfigBuffer* buffer);
+    virtual srs_error_t parse(srs_internal::SrsConfigBuffer* buffer, SrsConfig* conf = NULL);
     // Marshal the directive to writer.
     // @param level, the root is level0, all its directives are level1, and so on.
     virtual srs_error_t persistence(SrsFileWriter* writer, int level);
@@ -224,24 +224,36 @@ public:
     virtual SrsJsonAny* dumps_arg0_to_boolean();
 // private parse.
 private:
-    // The directive parsing type.
-    enum SrsDirectiveType {
+    // The directive parsing context.
+    enum SrsDirectiveContext {
         // The root directives, parsing file.
-        parse_file,
-        // For each direcitve, parsing text block.
-        parse_block
+        SrsDirectiveContextFile,
+        // For each directive, parsing text block.
+        SrsDirectiveContextBlock,
+    };
+    enum SrsDirectiveState {
+        // Init state
+        SrsDirectiveStateInit,
+        // The directive terminated by ';' found
+        SrsDirectiveStateEntire,
+        // The token terminated by '{' found
+        SrsDirectiveStateBlockStart,
+        // The '}' found
+        SrsDirectiveStateBlockEnd,
+        // The config file is done
+        SrsDirectiveStateEOF,
     };
     // Parse the conf from buffer. the work flow:
     // 1. read a token(directive args and a ret flag),
     // 2. initialize the directive by args, args[0] is name, args[1-N] is args of directive,
     // 3. if ret flag indicates there are child-directives, read_conf(directive, block) recursively.
-    virtual srs_error_t parse_conf(srs_internal::SrsConfigBuffer* buffer, SrsDirectiveType type);
+    virtual srs_error_t parse_conf(srs_internal::SrsConfigBuffer* buffer, SrsDirectiveContext ctx, SrsConfig* conf);
     // Read a token from buffer.
     // A token, is the directive args and a flag indicates whether has child-directives.
     // @param args, the output directive args, the first is the directive name, left is the args.
     // @param line_start, the actual start line of directive.
     // @return, an error code indicates error or has child-directives.
-    virtual srs_error_t read_token(srs_internal::SrsConfigBuffer* buffer, std::vector<std::string>& args, int& line_start);
+    virtual srs_error_t read_token(srs_internal::SrsConfigBuffer* buffer, std::vector<std::string>& args, int& line_start, SrsDirectiveState& state);
 };
 
 // The config service provider.
@@ -251,6 +263,7 @@ private:
 // You could keep it before st-thread switch, or simply never keep it.
 class SrsConfig
 {
+    friend class SrsConfDirective;
 // user command
 private:
     // Whether srs is run in dolphin mode.
@@ -357,6 +370,10 @@ private:
 public:
     // Parse the config file, which is specified by cli.
     virtual srs_error_t parse_file(const char* filename);
+private:
+    // Build a buffer from a src, which is string content or filename.
+    virtual srs_error_t build_buffer(std::string src, srs_internal::SrsConfigBuffer** pbuffer);
+public:
     // Check the parsed config.
     virtual srs_error_t check_config();
 protected:
@@ -383,6 +400,8 @@ public:
     // If  true, SRS will run in daemon mode, fork and fork to reap the
     // grand-child process to init process.
     virtual bool get_daemon();
+    // Whether srs in docker.
+    virtual bool get_in_docker();
 private:
     // Whether user use full.conf
     virtual bool is_full_config();
@@ -483,6 +502,7 @@ public:
     virtual bool get_rtc_server_enabled(SrsConfDirective* conf);
     virtual int get_rtc_server_listen();
     virtual std::string get_rtc_server_candidates();
+    virtual bool get_api_as_candidates();
     virtual std::string get_rtc_server_ip_family();
     virtual bool get_rtc_server_ecdsa();
     virtual bool get_rtc_server_encrypt();
@@ -620,6 +640,8 @@ public:
     virtual bool get_forward_enabled(SrsConfDirective* vhost);
     // Get the forward directive of vhost.
     virtual SrsConfDirective* get_forwards(std::string vhost);
+    // Get the forward directive of backend.
+    virtual SrsConfDirective* get_forward_backend(std::string vhost);
 
 public:
     // Whether the srt sevice enabled

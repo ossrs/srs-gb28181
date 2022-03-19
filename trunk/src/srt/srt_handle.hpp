@@ -1,7 +1,7 @@
 //
 // Copyright (c) 2013-2021 The SRS Authors
 //
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: MIT or MulanPSL-2.0
 //
 
 #ifndef SRT_HANDLE_H
@@ -37,7 +37,7 @@ private:
     //get srt conn object by srt socket
     SRT_CONN_PTR get_srt_conn(SRTSOCKET conn_srt_socket);
 
-    void handle_push_data(SRT_SOCKSTATUS status, const std::string& subpath, SRTSOCKET conn_fd);
+    void handle_push_data(SRT_SOCKSTATUS status, const std::string& path, const std::string& subpath, SRTSOCKET conn_fd);
     void handle_pull_data(SRT_SOCKSTATUS status, const std::string& subpath, SRTSOCKET conn_fd);
 
     //add new puller into puller list and conn_map

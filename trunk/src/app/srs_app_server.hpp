@@ -1,7 +1,7 @@
 //
 // Copyright (c) 2013-2021 The SRS Authors
 //
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: MIT or MulanPSL-2.0
 //
 
 #ifndef SRS_APP_SERVER_HPP
@@ -39,6 +39,7 @@ class SrsTcpListener;
 class SrsAppCasterFlv;
 class SrsResourceManager;
 class SrsLatestVersion;
+class SrsWaitGroup;
 
 // The listener type for server to identify the connection,
 // that is, use different type to process the connection.
@@ -239,6 +240,7 @@ private:
     SrsResourceManager* conn_manager;
     SrsCoroutine* trd_;
     SrsHourGlass* timer_;
+    SrsWaitGroup* wg_;
 private:
     // The pid file fd, lock the file write when server is running.
     // @remark the init.d script should cleanup the pid file, when stop service,
@@ -287,7 +289,9 @@ public:
     virtual srs_error_t register_signal();
     virtual srs_error_t http_handle();
     virtual srs_error_t ingest();
-    virtual srs_error_t start();
+public:
+    virtual srs_error_t start(SrsWaitGroup* wg);
+    void stop();
 // interface ISrsCoroutineHandler
 public:
     virtual srs_error_t cycle();
@@ -376,7 +380,7 @@ public:
     virtual ~SrsServerAdapter();
 public:
     virtual srs_error_t initialize();
-    virtual srs_error_t run();
+    virtual srs_error_t run(SrsWaitGroup* wg);
     virtual void stop();
 public:
     virtual SrsServer* instance();
