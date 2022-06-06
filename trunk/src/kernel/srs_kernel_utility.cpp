@@ -1,7 +1,7 @@
 //
 // Copyright (c) 2013-2021 The SRS Authors
 //
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: MIT or MulanPSL-2.0
 //
 
 #include <srs_kernel_utility.hpp>
@@ -155,7 +155,7 @@ string srs_dns_resolve(string host, int& family)
     hints.ai_family = family;
     
     addrinfo* r = NULL;
-    SrsAutoFree(addrinfo, r);
+    SrsAutoFreeH(addrinfo, r, freeaddrinfo);
     if(getaddrinfo(host.c_str(), NULL, &hints, &r)) {
         return "";
     }

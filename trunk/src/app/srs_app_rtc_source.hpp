@@ -1,7 +1,7 @@
 //
 // Copyright (c) 2013-2021 The SRS Authors
 //
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: MIT or MulanPSL-2.0
 //
 
 #ifndef SRS_APP_RTC_SOURCE_HPP
@@ -112,9 +112,8 @@ public:
     // @param r the client request.
     // @param pps the matched source, if success never be NULL.
     virtual srs_error_t fetch_or_create(SrsRequest* r, SrsRtcSource** pps);
-private:
+public:
     // Get the exists source, NULL when not exists.
-    // update the request and return the exists source.
     virtual SrsRtcSource* fetch(SrsRequest* r);
 };
 

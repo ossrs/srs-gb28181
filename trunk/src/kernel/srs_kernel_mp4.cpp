@@ -1,7 +1,7 @@
 //
 // Copyright (c) 2013-2021 The SRS Authors
 //
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: MIT or MulanPSL-2.0
 //
 
 #include <srs_kernel_mp4.hpp>
@@ -18,6 +18,11 @@
 #include <sstream>
 #include <iomanip>
 using namespace std;
+
+// For CentOS 6 or C++98, @see https://github.com/ossrs/srs/issues/2815
+#ifndef UINT32_MAX
+#define UINT32_MAX (4294967295U)
+#endif
 
 #define SRS_MP4_EOF_SIZE 0
 #define SRS_MP4_USE_LARGE_SIZE 1
@@ -2866,6 +2871,18 @@ void SrsMp4SampleTableBox::set_stco(SrsMp4ChunkOffsetBox* v)
     boxes.push_back(v);
 }
 
+SrsMp4ChunkLargeOffsetBox* SrsMp4SampleTableBox::co64()
+{
+    SrsMp4Box* box = get(SrsMp4BoxTypeCO64);
+    return dynamic_cast<SrsMp4ChunkLargeOffsetBox*>(box);
+}
+
+void SrsMp4SampleTableBox::set_co64(SrsMp4ChunkLargeOffsetBox* v)
+{
+    remove(SrsMp4BoxTypeCO64);
+    boxes.push_back(v);
+}
+
 SrsMp4SampleSizeBox* SrsMp4SampleTableBox::stsz()
 {
     SrsMp4Box* box = get(SrsMp4BoxTypeSTSZ);
@@ -4924,10 +4941,19 @@ srs_error_t SrsMp4SampleManager::write(SrsMp4MovieBox* moov)
         SrsMp4SampleSizeBox* stsz = new SrsMp4SampleSizeBox();
         stbl->set_stsz(stsz);
         
-        SrsMp4ChunkOffsetBox* stco = new SrsMp4ChunkOffsetBox();
-        stbl->set_stco(stco);
+        SrsMp4FullBox* co = NULL;
+        // When sample offset less than UINT32_MAX, we use stco(support 32bit offset) box to save storage space.
+        if (samples.empty() || (*samples.rbegin())->offset < UINT32_MAX) {
+            // stco support 32bit offset.
+            co = new SrsMp4ChunkOffsetBox();
+            stbl->set_stco(static_cast<SrsMp4ChunkOffsetBox*>(co));
+        } else {
+            // When sample offset bigger than UINT32_MAX, we use co64(support 64bit offset) box to avoid overflow.
+            co = new SrsMp4ChunkLargeOffsetBox();
+            stbl->set_co64(static_cast<SrsMp4ChunkLargeOffsetBox*>(co));
+        }
         
-        if ((err = write_track(SrsFrameTypeVideo, stts, stss, ctts, stsc, stsz, stco)) != srs_success) {
+        if ((err = write_track(SrsFrameTypeVideo, stts, stss, ctts, stsc, stsz, co)) != srs_success) {
             return srs_error_wrap(err, "write vide track");
         }
     }
@@ -4948,10 +4974,16 @@ srs_error_t SrsMp4SampleManager::write(SrsMp4MovieBox* moov)
         SrsMp4SampleSizeBox* stsz = new SrsMp4SampleSizeBox();
         stbl->set_stsz(stsz);
         
-        SrsMp4ChunkOffsetBox* stco = new SrsMp4ChunkOffsetBox();
-        stbl->set_stco(stco);
+        SrsMp4FullBox* co = NULL;
+        if (samples.empty() || (*samples.rbegin())->offset < UINT32_MAX) {
+            co = new SrsMp4ChunkOffsetBox();
+            stbl->set_stco(static_cast<SrsMp4ChunkOffsetBox*>(co));
+        } else {
+            co = new SrsMp4ChunkLargeOffsetBox();
+            stbl->set_co64(static_cast<SrsMp4ChunkLargeOffsetBox*>(co));
+        }
         
-        if ((err = write_track(SrsFrameTypeAudio, stts, stss, ctts, stsc, stsz, stco)) != srs_success) {
+        if ((err = write_track(SrsFrameTypeAudio, stts, stss, ctts, stsc, stsz, co)) != srs_success) {
             return srs_error_wrap(err, "write soun track");
         }
     }
@@ -5003,7 +5035,7 @@ srs_error_t SrsMp4SampleManager::write(SrsMp4MovieFragmentBox* moof, uint64_t& d
 
 srs_error_t SrsMp4SampleManager::write_track(SrsFrameType track,
     SrsMp4DecodingTime2SampleBox* stts, SrsMp4SyncSampleBox* stss, SrsMp4CompositionTime2SampleBox* ctts,
-    SrsMp4Sample2ChunkBox* stsc, SrsMp4SampleSizeBox* stsz, SrsMp4ChunkOffsetBox* stco)
+    SrsMp4Sample2ChunkBox* stsc, SrsMp4SampleSizeBox* stsz, SrsMp4FullBox* co)
 {
     srs_error_t err = srs_success;
     
@@ -5014,7 +5046,7 @@ srs_error_t SrsMp4SampleManager::write_track(SrsFrameType track,
     vector<SrsMp4CttsEntry> ctts_entries;
     
     vector<uint32_t> stsz_entries;
-    vector<uint32_t> stco_entries;
+    vector<uint64_t> co_entries;
     vector<uint32_t> stss_entries;
     
     SrsMp4Sample* previous = NULL;
@@ -5026,7 +5058,7 @@ srs_error_t SrsMp4SampleManager::write_track(SrsFrameType track,
         }
         
         stsz_entries.push_back(sample->nb_data);
-        stco_entries.push_back((uint32_t)sample->offset);
+        co_entries.push_back((uint64_t)sample->offset);
         
         if (sample->frame_type == SrsVideoAvcFrameTypeKeyFrame) {
             stss_entries.push_back(sample->index + 1);
@@ -5099,11 +5131,22 @@ srs_error_t SrsMp4SampleManager::write_track(SrsFrameType track,
         }
     }
     
-    if (stco && !stco_entries.empty()) {
-        stco->entry_count = (uint32_t)stco_entries.size();
-        stco->entries = new uint32_t[stco->entry_count];
-        for (int i = 0; i < (int)stco->entry_count; i++) {
-            stco->entries[i] = stco_entries.at(i);
+    if (!co_entries.empty()) {
+        SrsMp4ChunkOffsetBox* stco = dynamic_cast<SrsMp4ChunkOffsetBox*>(co);
+        SrsMp4ChunkLargeOffsetBox* co64 = dynamic_cast<SrsMp4ChunkLargeOffsetBox*>(co);
+
+        if (stco) {
+            stco->entry_count = (uint32_t)co_entries.size();
+            stco->entries = new uint32_t[stco->entry_count];
+            for (int i = 0; i < (int)stco->entry_count; i++) {
+                stco->entries[i] = co_entries.at(i);
+            }
+        } else if (co64) {
+            co64->entry_count = (uint32_t)co_entries.size();
+            co64->entries = new uint64_t[co64->entry_count];
+            for (int i = 0; i < (int)co64->entry_count; i++) {
+                co64->entries[i] = co_entries.at(i);
+            }
         }
     }
     
@@ -6313,6 +6356,7 @@ srs_error_t SrsMp4M2tsInitEncoder::write(SrsFormat* format, bool video, int tid)
             SrsMp4SampleSizeBox* stsz = new SrsMp4SampleSizeBox();
             stbl->set_stsz(stsz);
             
+            // TODO: FIXME: need to check using stco or co64?
             SrsMp4ChunkOffsetBox* stco = new SrsMp4ChunkOffsetBox();
             stbl->set_stco(stco);
             
@@ -6413,6 +6457,7 @@ srs_error_t SrsMp4M2tsInitEncoder::write(SrsFormat* format, bool video, int tid)
             SrsMp4SampleSizeBox* stsz = new SrsMp4SampleSizeBox();
             stbl->set_stsz(stsz);
             
+            // TODO: FIXME: need to check using stco or co64?
             SrsMp4ChunkOffsetBox* stco = new SrsMp4ChunkOffsetBox();
             stbl->set_stco(stco);
             
