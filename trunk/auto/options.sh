@@ -294,7 +294,6 @@ function parse_user_option() {
         --ffmpeg-fit)                   SRS_FFMPEG_FIT=$(switch2value $value) ;;
 
         --h265)                         if [[ $value == off ]]; then SRS_H265=NO; else SRS_H265=YES; fi    ;;
-
         --with-gb28181)                 SRS_GB28181=YES             ;;
         --without-gb28181)              SRS_GB28181=NO              ;;
         --with-iconv)                   SRS_ICONV=YES       ;;
