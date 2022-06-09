@@ -1389,16 +1389,24 @@ srs_error_t SrsGb28181RtmpMuxer::on_rtp_audio(SrsSimpleStream* stream, int64_t f
     // send each frame.
     SrsBuffer  *avs = new SrsBuffer(stream->bytes(), stream->length());
     SrsAutoFree(SrsBuffer, avs);
-    if (!avs->empty()) {
+    while (!avs->empty()) {
         if (type == STREAM_TYPE_AUDIO_AAC) {
-            char* frame = NULL;
+            //include adts_header
+            char* frame = avs->data() + avs->pos();
             int frame_size = 0;
+
+            //exclude adts_header
+            char* frame_payload = NULL;
+            int frame_payload_size = 0;
+
             SrsRawAacStreamCodec codec;
-            if ((err = aac->adts_demux(avs, &frame, &frame_size, codec)) != srs_success) {
+            if ((err = aac->adts_demux(avs, &frame_payload, &frame_payload_size, codec)) != srs_success) {
                 return srs_error_wrap(err, "demux adts");
             }
 
-            if (frame_size <= 0) {
+            frame_size = (int)(avs->data() + avs->pos() - frame);
+
+            if (frame_size <= 0 || frame_payload_size <= 0) {
                 return err;
             }
 
@@ -1430,10 +1438,12 @@ srs_error_t SrsGb28181RtmpMuxer::on_rtp_audio(SrsSimpleStream* stream, int64_t f
             }
             
             if (aac_specific_config != sh){
+                /* repetition?
                 std::string sh;
                 if ((err = aac->mux_sequence_header(&codec, sh)) != srs_success) {
                     return srs_error_wrap(err, "mux sequence header");
                 }
+                */
                 aac_specific_config = sh;
                 codec.aac_packet_type = 0;
                 if ((err = write_audio_raw_frame((char*)sh.data(), (int)sh.length(), &codec, dts)) != srs_success) {
@@ -1443,11 +1453,11 @@ srs_error_t SrsGb28181RtmpMuxer::on_rtp_audio(SrsSimpleStream* stream, int64_t f
 
             codec.aac_packet_type = 1;
             if  (send_adts) {  // audio raw data. with  adts header
-                if ((err = write_audio_raw_frame(stream->bytes(), stream->length(), &codec, dts)) != srs_success) {
+                if ((err = write_audio_raw_frame(frame, frame_size, &codec, dts)) != srs_success) {
                         return srs_error_wrap(err, "write audio raw frame");
                     }
             }else {  // audio raw data. without  adts header
-                if ((err = write_audio_raw_frame(frame, frame_size, &codec, dts)) != srs_success) {
+                if ((err = write_audio_raw_frame(frame_payload, frame_payload_size, &codec, dts)) != srs_success) {
                         return srs_error_wrap(err, "write audio raw frame");
                     }
             }
@@ -1471,11 +1481,12 @@ srs_error_t SrsGb28181RtmpMuxer::on_rtp_audio(SrsSimpleStream* stream, int64_t f
 
             char* frame = stream->bytes();
             int frame_size = stream->length();
+            avs->skip(frame_size); //data fin
             if ((err = write_audio_raw_frame(frame, frame_size, &codec, dts)) != srs_success) {
                 return srs_error_wrap(err, "write audio raw frame");
             }
         }
-    }//end if (!avs->empty()) 
+    }//end while (!avs->empty()) 
    
     return err;
 }
