@@ -1485,6 +1485,8 @@ srs_error_t SrsGb28181RtmpMuxer::on_rtp_audio(SrsSimpleStream* stream, int64_t f
             if ((err = write_audio_raw_frame(frame, frame_size, &codec, dts)) != srs_success) {
                 return srs_error_wrap(err, "write audio raw frame");
             }
+        }else{
+            break;
         }
     }//end while (!avs->empty()) 
    
