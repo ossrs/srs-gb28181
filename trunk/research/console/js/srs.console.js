@@ -558,7 +558,7 @@ scApp.filter("sc_filter_number", function(){
 
 scApp.filter("sc_filter_less", function(){
     return function(v) {
-        return v? (v.length > 15? v.substr(0, 15) + "...":v):v;
+        return v? (v.length > 15? v.slice(0, 15) + "...":v):v;
     };
 });
 
@@ -570,7 +570,7 @@ scApp.filter('sc_filter_style_error', function(){
 
 scApp.filter('sc_filter_preview_url', ['$sc_server', function($sc_server){
     return function(v){
-        var page = $sc_server.schema + "://ossrs.net/players/srs_player.html";
+        var page = $sc_server.schema + `://${$sc_server.host}:${$sc_server.http}/players/srs_player.html`;
         var http = $sc_server.http[$sc_server.http.length - 1];
         var query = "vhost=" + v.owner.name + "&app=" + v.app + "&stream=" + v.name + ".flv";
         query += "&server=" + $sc_server.host +"&port=" + http + "&autostart=true&schema=" + $sc_server.schema;
@@ -636,7 +636,7 @@ scApp.provider("$sc_server", [function(){
                 var $location = self.$location;
                 var url = $location.absUrl();
                 if (url.indexOf('?') > 0) {
-                    url = url.substr(0, url.indexOf('?'));
+                    url = url.slice(0, url.indexOf('?'));
                 }
                 url += '?';
 
@@ -684,6 +684,10 @@ scApp.provider("$sc_server", [function(){
                     self.port = $location.search().port;
                 } else {
                     self.port = $location.port();
+                }
+
+                if ($location.search().http) {
+                    self.http = [$location.search().http];
                 }
             }
         };

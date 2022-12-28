@@ -1,7 +1,7 @@
 //
 // Copyright (c) 2013-2021 The SRS Authors
 //
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: MIT or MulanPSL-2.0
 //
 
 #include <srs_app_config.hpp>
@@ -50,7 +50,7 @@ const char* _srs_version = "XCORE-" RTMP_SIG_SRS_SERVER;
 #define SRS_CONF_PERFER_TRUE(conf_arg) conf_arg != "off"
 
 // default config file.
-#define SRS_CONF_DEFAULT_COFNIG_FILE "conf/srs.conf"
+#define SRS_CONF_DEFAULT_COFNIG_FILE SRS_DEFAULT_CONFIG
 
 // '\n'
 #define SRS_LF (char)SRS_CONSTS_LF
@@ -854,9 +854,9 @@ bool SrsConfDirective::is_stream_caster()
     return name == "stream_caster";
 }
 
-srs_error_t SrsConfDirective::parse(SrsConfigBuffer* buffer)
+srs_error_t SrsConfDirective::parse(SrsConfigBuffer* buffer, SrsConfig* conf)
 {
-    return parse_conf(buffer, parse_file);
+    return parse_conf(buffer, SrsDirectiveContextFile, conf);
 }
 
 srs_error_t SrsConfDirective::persistence(SrsFileWriter* writer, int level)
@@ -983,71 +983,78 @@ SrsJsonAny* SrsConfDirective::dumps_arg0_to_boolean()
 // LCOV_EXCL_STOP
 
 // see: ngx_conf_parse
-srs_error_t SrsConfDirective::parse_conf(SrsConfigBuffer* buffer, SrsDirectiveType type)
+srs_error_t SrsConfDirective::parse_conf(SrsConfigBuffer* buffer, SrsDirectiveContext ctx, SrsConfig* conf)
 {
     srs_error_t err = srs_success;
     
     while (true) {
         std::vector<string> args;
         int line_start = 0;
-        err = read_token(buffer, args, line_start);
-        
-        /**
-         * ret maybe:
-         * ERROR_SYSTEM_CONFIG_INVALID           error.
-         * ERROR_SYSTEM_CONFIG_DIRECTIVE         directive terminated by ';' found
-         * ERROR_SYSTEM_CONFIG_BLOCK_START       token terminated by '{' found
-         * ERROR_SYSTEM_CONFIG_BLOCK_END         the '}' found
-         * ERROR_SYSTEM_CONFIG_EOF               the config file is done
-         */
-        if (srs_error_code(err) == ERROR_SYSTEM_CONFIG_INVALID) {
-            return err;
+        SrsDirectiveState state = SrsDirectiveStateInit;
+        if ((err = read_token(buffer, args, line_start, state)) != srs_success) {
+            return srs_error_wrap(err, "read token, line=%d, state=%d", line_start, state);
         }
-        if (srs_error_code(err) == ERROR_SYSTEM_CONFIG_BLOCK_END) {
-            if (type != parse_block) {
-                return srs_error_wrap(err, "line %d: unexpected \"}\"", buffer->line);
-            }
-            
-            srs_freep(err);
-            return srs_success;
+
+        if (state == SrsDirectiveStateBlockEnd) {
+            return ctx == SrsDirectiveContextBlock ? srs_success : srs_error_new(ERROR_SYSTEM_CONFIG_INVALID, "line %d: unexpected \"}\"", buffer->line);
         }
-        if (srs_error_code(err) == ERROR_SYSTEM_CONFIG_EOF) {
-            if (type == parse_block) {
-                return srs_error_wrap(err, "line %d: unexpected end of file, expecting \"}\"", conf_line);
-            }
-            
-            srs_freep(err);
-            return srs_success;
+        if (state == SrsDirectiveStateEOF) {
+            return ctx != SrsDirectiveContextBlock ? srs_success : srs_error_new(ERROR_SYSTEM_CONFIG_INVALID, "line %d: unexpected end of file, expecting \"}\"", conf_line);
         }
-        
         if (args.empty()) {
             return srs_error_new(ERROR_SYSTEM_CONFIG_INVALID, "line %d: empty directive", conf_line);
         }
         
-        // build directive tree.
-        SrsConfDirective* directive = new SrsConfDirective();
-        
-        directive->conf_line = line_start;
-        directive->name = args[0];
-        args.erase(args.begin());
-        directive->args.swap(args);
-        
-        directives.push_back(directive);
-        
-        if (srs_error_code(err) == ERROR_SYSTEM_CONFIG_BLOCK_START) {
-            srs_freep(err);
-            if ((err = directive->parse_conf(buffer, parse_block)) != srs_success) {
-                return srs_error_wrap(err, "parse dir");
+        // Build normal directive which is not "include".
+        if (args.at(0) != "include") {
+            SrsConfDirective* directive = new SrsConfDirective();
+
+            directive->conf_line = line_start;
+            directive->name = args[0];
+            args.erase(args.begin());
+            directive->args.swap(args);
+
+            directives.push_back(directive);
+
+            if (state == SrsDirectiveStateBlockStart) {
+                if ((err = directive->parse_conf(buffer, SrsDirectiveContextBlock, conf)) != srs_success) {
+                    return srs_error_wrap(err, "parse dir");
+                }
+            }
+            continue;
+        }
+
+        // Parse including, allow multiple files.
+        vector<string> files(args.begin() + 1, args.end());
+        if (files.empty()) {
+            return srs_error_new(ERROR_SYSTEM_CONFIG_INVALID, "line %d: include is empty directive", buffer->line);
+        }
+        if (!conf) {
+            return srs_error_new(ERROR_SYSTEM_CONFIG_INVALID, "line %d: no config", buffer->line);
+        }
+
+        for (int i = 0; i < (int)files.size(); i++) {
+            std::string file = files.at(i);
+            srs_assert(!file.empty());
+            srs_trace("config parse include %s", file.c_str());
+
+            SrsConfigBuffer* include_file_buffer = NULL;
+            SrsAutoFree(SrsConfigBuffer, include_file_buffer);
+            if ((err = conf->build_buffer(file, &include_file_buffer)) != srs_success) {
+                return srs_error_wrap(err, "buffer fullfill %s", file.c_str());
+            }
+
+            if ((err = parse_conf(include_file_buffer, SrsDirectiveContextFile, conf)) != srs_success) {
+                return srs_error_wrap(err, "parse include buffer");
             }
         }
-        srs_freep(err);
     }
     
     return err;
 }
 
 // see: ngx_conf_read_token
-srs_error_t SrsConfDirective::read_token(SrsConfigBuffer* buffer, vector<string>& args, int& line_start)
+srs_error_t SrsConfDirective::read_token(SrsConfigBuffer* buffer, vector<string>& args, int& line_start, SrsDirectiveState& state)
 {
     srs_error_t err = srs_success;
     
@@ -1069,8 +1076,9 @@ srs_error_t SrsConfDirective::read_token(SrsConfigBuffer* buffer, vector<string>
                     buffer->line);
             }
             srs_trace("config parse complete");
-            
-            return srs_error_new(ERROR_SYSTEM_CONFIG_EOF, "EOF");
+
+            state = SrsDirectiveStateEOF;
+            return err;
         }
         
         char ch = *buffer->pos++;
@@ -1091,10 +1099,12 @@ srs_error_t SrsConfDirective::read_token(SrsConfigBuffer* buffer, vector<string>
                 continue;
             }
             if (ch == ';') {
-                return srs_error_new(ERROR_SYSTEM_CONFIG_DIRECTIVE, "dir");
+                state = SrsDirectiveStateEntire;
+                return err;
             }
             if (ch == '{') {
-                return srs_error_new(ERROR_SYSTEM_CONFIG_BLOCK_START, "block");
+                state = SrsDirectiveStateBlockStart;
+                return err;
             }
             return srs_error_new(ERROR_SYSTEM_CONFIG_INVALID, "line %d: unexpected '%c'", buffer->line, ch);
         }
@@ -1110,17 +1120,20 @@ srs_error_t SrsConfDirective::read_token(SrsConfigBuffer* buffer, vector<string>
                     if (args.size() == 0) {
                         return srs_error_new(ERROR_SYSTEM_CONFIG_INVALID, "line %d: unexpected ';'", buffer->line);
                     }
-                    return srs_error_new(ERROR_SYSTEM_CONFIG_DIRECTIVE, "dir");
+                    state = SrsDirectiveStateEntire;
+                    return err;
                 case '{':
                     if (args.size() == 0) {
                         return srs_error_new(ERROR_SYSTEM_CONFIG_INVALID, "line %d: unexpected '{'", buffer->line);
                     }
-                    return srs_error_new(ERROR_SYSTEM_CONFIG_BLOCK_START, "block");
+                    state = SrsDirectiveStateBlockStart;
+                    return err;
                 case '}':
                     if (args.size() != 0) {
                         return srs_error_new(ERROR_SYSTEM_CONFIG_INVALID, "line %d: unexpected '}'", buffer->line);
                     }
-                    return srs_error_new(ERROR_SYSTEM_CONFIG_BLOCK_END, "block");
+                    state = SrsDirectiveStateBlockEnd;
+                    return err;
                 case '#':
                     sharp_comment = 1;
                     continue;
@@ -1175,10 +1188,12 @@ srs_error_t SrsConfDirective::read_token(SrsConfigBuffer* buffer, vector<string>
                 srs_freepa(aword);
                 
                 if (ch == ';') {
-                    return srs_error_new(ERROR_SYSTEM_CONFIG_DIRECTIVE, "dir");
+                    state = SrsDirectiveStateEntire;
+                    return err;
                 }
                 if (ch == '{') {
-                    return srs_error_new(ERROR_SYSTEM_CONFIG_BLOCK_START, "block");
+                    state = SrsDirectiveStateBlockStart;
+                    return err;
                 }
             }
         }
@@ -1994,23 +2009,22 @@ srs_error_t SrsConfig::parse_options(int argc, char** argv)
     srs_trace(_srs_version);
 
     // Try config files as bellow:
-    //      config_file Specified by user, like conf/srs.conf
-    //      try_docker_config Guess by SRS, like conf/docker.conf
-    //      try_fhs_config For FHS, try /etc/srs/srs.conf first, @see https://github.com/ossrs/srs/pull/2711
-    if (!srs_path_exists(config_file)) {
+    //      User specified config(not empty), like user/docker.conf
+    //      If user specified *docker.conf, try *srs.conf, like user/srs.conf
+    //      Try the default srs config, defined as SRS_CONF_DEFAULT_COFNIG_FILE, like conf/srs.conf
+    //      Try config for FHS, like /etc/srs/srs.conf @see https://github.com/ossrs/srs/pull/2711
+    if (true) {
         vector<string> try_config_files;
         if (!config_file.empty()) {
             try_config_files.push_back(config_file);
-            if (srs_string_ends_with(config_file, "docker.conf")) {
-                try_config_files.push_back(srs_string_replace(config_file, "docker.conf", "srs.conf"));
-            }
+        }
+        if (srs_string_ends_with(config_file, "docker.conf")) {
+            try_config_files.push_back(srs_string_replace(config_file, "docker.conf", "srs.conf"));
         }
         try_config_files.push_back(SRS_CONF_DEFAULT_COFNIG_FILE);
-        if (srs_string_ends_with(SRS_CONF_DEFAULT_COFNIG_FILE, "docker.conf")) {
-            try_config_files.push_back(srs_string_replace(SRS_CONF_DEFAULT_COFNIG_FILE, "docker.conf", "srs.conf"));
-        }
         try_config_files.push_back("/etc/srs/srs.conf");
 
+        // Match the first exists file.
         string exists_config_file;
         for (int i = 0; i < (int) try_config_files.size(); i++) {
             string try_config_file = try_config_files.at(i);
@@ -2032,28 +2046,32 @@ srs_error_t SrsConfig::parse_options(int argc, char** argv)
 
     // Parse the matched config file.
     err = parse_file(config_file.c_str());
-    
+
     if (test_conf) {
         // the parse_file never check the config,
         // we check it when user requires check config file.
         if (err == srs_success && (err = srs_config_transform_vhost(root)) == srs_success) {
-            if (err == srs_success && (err = check_config()) == srs_success) {
-                srs_trace("config file is ok");
+            if ((err = check_config()) == srs_success) {
+                srs_trace("the config file %s syntax is ok", config_file.c_str());
+                srs_trace("config file %s test is successful", config_file.c_str());
                 exit(0);
             }
         }
-        
-        srs_error("invalid config, %s", srs_error_desc(err).c_str());
-        int ret = srs_error_code(err);
-        srs_freep(err);
-        exit(ret);
+
+        srs_trace("invalid config%s in %s", srs_error_summary(err).c_str(), config_file.c_str());
+        srs_trace("config file %s test is failed", config_file.c_str());
+        exit(srs_error_code(err));
     }
-    
+
+    if (err != srs_success) {
+        return srs_error_wrap(err, "invalid config");
+    }
+
     // transform config to compatible with previous style of config.
     if ((err = srs_config_transform_vhost(root)) != srs_success) {
         return srs_error_wrap(err, "transform");
     }
-    
+
     ////////////////////////////////////////////////////////////////////////
     // check log name and level
     ////////////////////////////////////////////////////////////////////////
@@ -2419,17 +2437,32 @@ srs_error_t SrsConfig::parse_file(const char* filename)
     if (config_file.empty()) {
         return srs_error_new(ERROR_SYSTEM_CONFIG_INVALID, "empty config");
     }
-    
-    SrsConfigBuffer buffer;
-    
-    if ((err = buffer.fullfill(config_file.c_str())) != srs_success) {
-        return srs_error_wrap(err, "buffer fullfil");
+
+    SrsConfigBuffer* buffer = NULL;
+    SrsAutoFree(SrsConfigBuffer, buffer);
+    if ((err = build_buffer(config_file, &buffer)) != srs_success) {
+        return srs_error_wrap(err, "buffer fullfill %s", config_file.c_str());
     }
     
-    if ((err = parse_buffer(&buffer)) != srs_success) {
+    if ((err = parse_buffer(buffer)) != srs_success) {
         return srs_error_wrap(err, "parse buffer");
     }
     
+    return err;
+}
+
+srs_error_t SrsConfig::build_buffer(string src, SrsConfigBuffer** pbuffer)
+{
+    srs_error_t err = srs_success;
+
+    SrsConfigBuffer* buffer = new SrsConfigBuffer();
+
+    if ((err = buffer->fullfill(src.c_str())) != srs_success) {
+        srs_freep(buffer);
+        return srs_error_wrap(err, "read from src %s", src.c_str());
+    }
+
+    *pbuffer = buffer;
     return err;
 }
 // LCOV_EXCL_STOP
@@ -2484,7 +2517,7 @@ srs_error_t SrsConfig::check_normal_config()
             && n != "grace_start_wait" && n != "empty_ip_ok" && n != "disable_daemon_for_docker"
             && n != "inotify_auto_reload" && n != "auto_reload_for_docker" && n != "tcmalloc_release_rate"
             && n != "query_latest_version"
-            && n != "circuit_breaker" && n != "is_full"
+            && n != "circuit_breaker" && n != "is_full" && n != "in_docker"
             ) {
             return srs_error_new(ERROR_SYSTEM_CONFIG_INVALID, "illegal directive %s", n.c_str());
         }
@@ -2555,7 +2588,7 @@ srs_error_t SrsConfig::check_normal_config()
             string n = conf->at(i)->name;
             if (n != "enabled" && n != "listen" && n != "dir" && n != "candidate" && n != "ecdsa"
                 && n != "encrypt" && n != "reuseport" && n != "merge_nalus" && n != "black_hole"
-                && n != "ip_family") {
+                && n != "ip_family" && n != "api_as_candidates") {
                 return srs_error_new(ERROR_SYSTEM_CONFIG_INVALID, "illegal rtc_server.%s", n.c_str());
             }
         }
@@ -2808,7 +2841,7 @@ srs_error_t SrsConfig::check_normal_config()
             } else if (n == "forward") {
                 for (int j = 0; j < (int)conf->directives.size(); j++) {
                     string m = conf->at(j)->name;
-                    if (m != "enabled" && m != "destination") {
+                    if (m != "enabled" && m != "destination" && m != "backend") {
                         return srs_error_new(ERROR_SYSTEM_CONFIG_INVALID, "illegal vhost.forward.%s of %s", m.c_str(), vhost->arg0().c_str());
                     }
                 }
@@ -2968,7 +3001,7 @@ srs_error_t SrsConfig::parse_buffer(SrsConfigBuffer* buffer)
     root = new SrsConfDirective();
 
     // Parse root tree from buffer.
-    if ((err = root->parse(buffer)) != srs_success) {
+    if ((err = root->parse(buffer, this)) != srs_success) {
         return srs_error_wrap(err, "root parse");
     }
     
@@ -3010,6 +3043,18 @@ bool SrsConfig::get_daemon()
     }
     
     return SRS_CONF_PERFER_TRUE(conf->arg0());
+}
+
+bool SrsConfig::get_in_docker()
+{
+    static bool DEFAULT = false;
+
+    SrsConfDirective* conf = root->get("in_docker");
+    if (!conf) {
+        return DEFAULT;
+    }
+
+    return SRS_CONF_PERFER_FALSE(conf->arg0());
 }
 
 bool SrsConfig::is_full_config()
@@ -3824,6 +3869,23 @@ std::string SrsConfig::get_rtc_server_candidates()
     }
 
     return conf->arg0();
+}
+
+bool SrsConfig::get_api_as_candidates()
+{
+    static bool DEFAULT = true;
+
+    SrsConfDirective* conf = root->get("rtc_server");
+    if (!conf) {
+        return DEFAULT;
+    }
+
+    conf = conf->get("api_as_candidates");
+    if (!conf || conf->arg0().empty()) {
+        return DEFAULT;
+    }
+
+    return SRS_CONF_PERFER_TRUE(conf->arg0());
 }
 
 std::string SrsConfig::get_rtc_server_ip_family()
@@ -4868,6 +4930,21 @@ SrsConfDirective* SrsConfig::get_forwards(string vhost)
     }
     
     return conf->get("destination");
+}
+
+SrsConfDirective* SrsConfig::get_forward_backend(string vhost)
+{
+    SrsConfDirective* conf = get_vhost(vhost);
+    if (!conf) {
+        return NULL;
+    }
+    
+    conf = conf->get("forward");
+    if (!conf) {
+        return NULL;
+    }
+    
+    return conf->get("backend");
 }
 
 SrsConfDirective* SrsConfig::get_vhost_http_hooks(string vhost)

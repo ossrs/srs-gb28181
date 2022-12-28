@@ -1,7 +1,7 @@
 //
 // Copyright (c) 2013-2021 The SRS Authors
 //
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: MIT or MulanPSL-2.0
 //
 
 #ifndef SRS_KERNEL_CONSTS_HPP
@@ -107,6 +107,7 @@
 ///////////////////////////////////////////////////////////
 #define SRS_CONSTS_NULL_FILE "/dev/null"
 #define SRS_CONSTS_LOCALHOST "127.0.0.1"
+#define SRS_CONSTS_LOCALHOST_NAME "localhost"
 #define SRS_CONSTS_LOOPBACK "0.0.0.0"
 #define SRS_CONSTS_LOOPBACK6 "::"
 

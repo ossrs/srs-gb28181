@@ -1,7 +1,7 @@
 //
 // Copyright (c) 2013-2021 The SRS Authors
 //
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: MIT or MulanPSL-2.0
 //
 
 #include <srs_kernel_rtc_rtcp.hpp>
@@ -1010,7 +1010,7 @@ srs_error_t SrsRtcpTWCC::process_pkt_chunk(SrsRtcpTWCC::SrsRtcpTWCCChunk& chunk,
     size_t needed_chunk_size = chunk.size == 0 ? kTwccFbChunkBytes : 0;
 
     size_t might_occupied = pkt_len + needed_chunk_size + delta_size;
-    if (might_occupied > kRtcpPacketSize) {
+    if (might_occupied > (size_t)kRtcpPacketSize) {
         return srs_error_new(ERROR_RTC_RTCP, "might_occupied %zu", might_occupied);
     }
 
@@ -1346,9 +1346,14 @@ srs_error_t SrsRtcpNack::encode(SrsBuffer *buffer)
             if((sn - pid) < 1) {
                 srs_info("skip seq %d", sn);
             } else if( (sn - pid) > 16) {
-                // add new chunk
+                // append full chunk
                 chunks.push_back(chunk);
-                chunk.in_use = false;
+
+                // start new chunk
+                chunk.pid = sn;
+                chunk.blp = 0;
+                chunk.in_use = true;
+                pid = sn;
             } else {
                 chunk.blp |= 1 << (sn-pid-1);
             }

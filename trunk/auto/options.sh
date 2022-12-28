@@ -39,6 +39,7 @@ SRS_FFMPEG_TOOL=NO
 SRS_FFMPEG_FIT=RESERVED
 # arguments
 SRS_PREFIX=/usr/local/srs
+SRS_DEFAULT_CONFIG=conf/srs.conf
 SRS_JOBS=1
 SRS_STATIC=NO
 # If enabled, link shared libraries for libst.so which uses MPL license.
@@ -133,6 +134,7 @@ Features:
   --h265=on|off             Whether build the H.265 support. Default: $(value2switch $SRS_H265)
 
   --prefix=<path>           The absolute installation path. Default: $SRS_PREFIX
+  --config=<path>           The default config file for SRS. Default: $SRS_DEFAULT_CONFIG
   --gcov=on|off             Whether enable the GCOV compiler options. Default: $(value2switch $SRS_GCOV)
   --debug=on|off            Whether enable the debug code, may hurt performance. Default: $(value2switch $SRS_DEBUG)
   --debug-stats=on|off      Whether enable the debug stats, may hurt performance. Default: $(value2switch $SRS_DEBUG_STATS)
@@ -226,6 +228,7 @@ function parse_user_option() {
         
         --jobs)                         SRS_JOBS=${value}           ;;
         --prefix)                       SRS_PREFIX=${value}         ;;
+        --config)                       SRS_DEFAULT_CONFIG=${value} ;;
 
         --static)                       SRS_STATIC=$(switch2value $value) ;;
         --cpu)                          SRS_CROSS_BUILD_CPU=${value} ;;
@@ -291,7 +294,6 @@ function parse_user_option() {
         --ffmpeg-fit)                   SRS_FFMPEG_FIT=$(switch2value $value) ;;
 
         --h265)                         if [[ $value == off ]]; then SRS_H265=NO; else SRS_H265=YES; fi    ;;
-
         --with-gb28181)                 SRS_GB28181=YES             ;;
         --without-gb28181)              SRS_GB28181=NO              ;;
         --with-iconv)                   SRS_ICONV=YES       ;;
@@ -510,6 +512,7 @@ function regenerate_options() {
     SRS_AUTO_USER_CONFIGURE=`echo $opt`
     # regenerate the options for default values.
     SRS_AUTO_CONFIGURE="--prefix=${SRS_PREFIX}"
+    SRS_AUTO_CONFIGURE="${SRS_AUTO_CONFIGURE} --config=$SRS_DEFAULT_CONFIG"
     SRS_AUTO_CONFIGURE="${SRS_AUTO_CONFIGURE} --hls=$(value2switch $SRS_HLS)"
     SRS_AUTO_CONFIGURE="${SRS_AUTO_CONFIGURE} --hds=$(value2switch $SRS_HDS)"
     SRS_AUTO_CONFIGURE="${SRS_AUTO_CONFIGURE} --dvr=$(value2switch $SRS_DVR)"
@@ -601,7 +604,7 @@ function check_option_conflicts() {
     fi
     if [[ $SRS_GPERF_MC = YES && $SRS_GPERF_MP = YES ]]; then
         echo "gperf-mc not compatible with gperf-mp, see: ./configure --help";
-        echo "@see: http://google-perftools.googlecode.com/svn/trunk/doc/heap_checker.html";
+        echo "@see: https://gperftools.github.io/gperftools/heap_checker.html";
         echo "Note that since the heap-checker uses the heap-profiling framework internally, it is not possible to run both the heap-checker and heap profiler at the same time";
         __check_ok=NO
     fi

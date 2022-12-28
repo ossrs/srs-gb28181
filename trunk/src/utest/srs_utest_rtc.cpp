@@ -1,7 +1,7 @@
 //
 // Copyright (c) 2013-2021 The SRS Authors
 //
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: MIT or MulanPSL-2.0
 //
 #include <srs_utest_rtc.hpp>
 
@@ -744,6 +744,32 @@ VOID TEST(KernelRTCTest, NACKFetchRTPPacket)
     }
 }
 
+VOID TEST(KernelRTCTest, NACKEncode)
+{
+    uint32_t ssrc = 123;
+    char buf_before[kRtcpPacketSize];
+    SrsBuffer stream_before(buf_before, sizeof(buf_before));
+    
+    SrsRtcpNack rtcp_nack_encode(ssrc);
+    for(uint16_t i = 16; i < 50; ++i) {
+        rtcp_nack_encode.add_lost_sn(i);
+    }
+    srs_error_t err_before = rtcp_nack_encode.encode(&stream_before);
+    EXPECT_TRUE(err_before == 0);
+    char buf_after[kRtcpPacketSize];
+    memcpy(buf_after, buf_before, kRtcpPacketSize);
+    SrsBuffer stream_after(buf_after, sizeof(buf_after));
+    SrsRtcpNack rtcp_nack_decode(ssrc);
+    srs_error_t err_after = rtcp_nack_decode.decode(&stream_after);
+    EXPECT_TRUE(err_after == 0);
+    vector<uint16_t> before = rtcp_nack_encode.get_lost_sns();
+    vector<uint16_t> after = rtcp_nack_decode.get_lost_sns();
+    EXPECT_TRUE(before.size() == after.size());
+    for(int i = 0; i < before.size() && i < after.size(); ++i) {
+        EXPECT_TRUE(before.at(i) == after.at(i));
+    }
+}
+
 extern bool srs_is_stun(const uint8_t* data, size_t size);
 extern bool srs_is_dtls(const uint8_t* data, size_t len);
 extern bool srs_is_rtp_or_rtcp(const uint8_t* data, size_t len);
@@ -1143,6 +1169,36 @@ VOID TEST(KernelRTCTest, SyncTimestampBySenderReportConsecutive)
     }
 }
 
+VOID TEST(KernelRTCTest, SrsRtcpNack)
+{
+    uint32_t sender_ssrc = 0x0A;
+    uint32_t media_ssrc = 0x0B;
+
+    SrsRtcpNack nack_encoder(sender_ssrc);
+    nack_encoder.set_media_ssrc(media_ssrc);
+
+    for (uint16_t seq = 15; seq < 45; seq++) {
+        nack_encoder.add_lost_sn(seq);
+    }
+    EXPECT_FALSE(nack_encoder.empty());
+
+    char buf[kRtcpPacketSize];
+    SrsBuffer stream(buf, sizeof(buf));
+
+    srs_error_t err = srs_success;
+    err = nack_encoder.encode(&stream);
+    EXPECT_EQ(srs_error_code(err), srs_success);
+
+    SrsRtcpNack nack_decoder;
+    stream.skip(-stream.pos());
+    err = nack_decoder.decode(&stream);
+    EXPECT_EQ(srs_error_code(err), srs_success);
+
+    vector<uint16_t> actual_lost_sn = nack_encoder.get_lost_sns();
+    vector<uint16_t> req_lost_sns = nack_decoder.get_lost_sns();
+    EXPECT_EQ(actual_lost_sn.size(), req_lost_sns.size());
+}
+
 VOID TEST(KernelRTCTest, SyncTimestampBySenderReportDuplicated)
 {
     SrsRtcConnection s(NULL, SrsContextId()); 
@@ -1217,3 +1273,4 @@ VOID TEST(KernelRTCTest, SyncTimestampBySenderReportDuplicated)
         }
     }
 }
+

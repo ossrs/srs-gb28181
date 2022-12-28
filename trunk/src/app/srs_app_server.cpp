@@ -1,7 +1,7 @@
 //
 // Copyright (c) 2013-2021 The SRS Authors
 //
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: MIT or MulanPSL-2.0
 //
 
 #include <srs_app_server.hpp>
@@ -51,7 +51,7 @@ std::string srs_listener_type2string(SrsListenerType type)
         case SrsListenerHttpStream:
             return "HTTP-Server";
         case SrsListenerHttpsStream:
-            return "HTTP-Server";
+            return "HTTPS-Server";
         case SrsListenerMpegTsOverUdp:
             return "MPEG-TS over UDP";
         case SrsListenerFlv:
@@ -329,6 +329,8 @@ SrsSignalManager::SrsSignalManager(SrsServer* s)
 
 SrsSignalManager::~SrsSignalManager()
 {
+    srs_freep(trd);
+
     srs_close_stfd(signal_read_stfd);
     
     if (sig_pipe[0] > 0) {
@@ -337,8 +339,6 @@ SrsSignalManager::~SrsSignalManager()
     if (sig_pipe[1] > 0) {
         ::close(sig_pipe[1]);
     }
-    
-    srs_freep(trd);
 }
 
 srs_error_t SrsSignalManager::initialize()
@@ -615,6 +615,7 @@ SrsServer::SrsServer()
     ingester = new SrsIngester();
     trd_ = new SrsSTCoroutine("srs", this, _srs_context->get_id());
     timer_ = NULL;
+    wg_ = NULL;
 }
 
 SrsServer::~SrsServer()
@@ -997,7 +998,7 @@ srs_error_t SrsServer::ingest()
     return err;
 }
 
-srs_error_t SrsServer::start()
+srs_error_t SrsServer::start(SrsWaitGroup* wg)
 {
     srs_error_t err = srs_success;
 
@@ -1013,31 +1014,25 @@ srs_error_t SrsServer::start()
         return srs_error_wrap(err, "tick");
     }
 
+    // OK, we start SRS server.
+    wg_ = wg;
+    wg->add(1);
+
     return err;
 }
 
-srs_error_t SrsServer::cycle()
+void SrsServer::stop()
 {
-    srs_error_t err = srs_success;
-
-    // Start the inotify auto reload by watching config file.
-    SrsInotifyWorker inotify(this);
-    if ((err = inotify.start()) != srs_success) {
-        return srs_error_wrap(err, "start inotify");
-    }
-
-    // Do server main cycle.
-     err = do_cycle();
-    
 #ifdef SRS_GPERF_MC
-    destroy();
-    
+    dispose();
+
     // remark, for gmc, never invoke the exit().
     srs_warn("sleep a long time for system st-threads to cleanup.");
     srs_usleep(3 * 1000 * 1000);
     srs_warn("system quit");
 
-    return err;
+    // For GCM, cleanup done.
+    return;
 #endif
 
     // quit normally.
@@ -1056,12 +1051,27 @@ srs_error_t SrsServer::cycle()
     }
 
     srs_trace("srs terminated");
-    
+
     // for valgrind to detect.
     srs_freep(_srs_config);
     srs_freep(_srs_log);
+}
 
-    exit(0);
+srs_error_t SrsServer::cycle()
+{
+    srs_error_t err = srs_success;
+
+    // Start the inotify auto reload by watching config file.
+    SrsInotifyWorker inotify(this);
+    if ((err = inotify.start()) != srs_success) {
+        return srs_error_wrap(err, "start inotify");
+    }
+
+    // Do server main cycle.
+     err = do_cycle();
+
+    // OK, SRS server is done.
+    wg_->done();
 
     return err;
 }
@@ -1514,8 +1524,10 @@ srs_error_t SrsServer::accept_client(SrsListenerType type, srs_netfd_t stfd)
     ISrsStartableConneciton* conn = NULL;
     
     if ((err = fd_to_resource(type, stfd, &conn)) != srs_success) {
+        //close fd on conn error, otherwise will lead to fd leak -gs
+        srs_close_stfd(stfd);
         if (srs_error_code(err) == ERROR_SOCKET_GET_PEER_IP && _srs_config->empty_ip_ok()) {
-            srs_close_stfd(stfd); srs_error_reset(err);
+            srs_error_reset(err);
             return srs_success;
         }
         return srs_error_wrap(err, "fd to resource");
@@ -1766,7 +1778,7 @@ srs_error_t SrsServerAdapter::initialize()
     return err;
 }
 
-srs_error_t SrsServerAdapter::run()
+srs_error_t SrsServerAdapter::run(SrsWaitGroup* wg)
 {
     srs_error_t err = srs_success;
 
@@ -1803,7 +1815,7 @@ srs_error_t SrsServerAdapter::run()
         return srs_error_wrap(err, "ingest");
     }
 
-    if ((err = srs->start()) != srs_success) {
+    if ((err = srs->start(wg)) != srs_success) {
         return srs_error_wrap(err, "start");
     }
 

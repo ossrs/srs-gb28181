@@ -1,7 +1,7 @@
 //
 // Copyright (c) 2013-2021 The SRS Authors
 //
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: MIT or MulanPSL-2.0
 //
 
 #include <srs_app_st.hpp>
@@ -295,5 +295,37 @@ void* SrsFastCoroutine::pfn(void* arg)
     }
 
     return (void*)err;
+}
+
+SrsWaitGroup::SrsWaitGroup()
+{
+    nn_ = 0;
+    done_ = srs_cond_new();
+}
+
+SrsWaitGroup::~SrsWaitGroup()
+{
+    wait();
+    srs_cond_destroy(done_);
+}
+
+void SrsWaitGroup::add(int n)
+{
+    nn_ += n;
+}
+
+void SrsWaitGroup::done()
+{
+    nn_--;
+    if (nn_ <= 0) {
+        srs_cond_signal(done_);
+    }
+}
+
+void SrsWaitGroup::wait()
+{
+    if (nn_ > 0) {
+        srs_cond_wait(done_);
+    }
 }
 
